@@ -1,0 +1,48 @@
+# Variables samples
+ignore = ["static/**", "libs/**"]
+zero = 0
+
+# Build variables
+target = "dist/main"
+src = "src/main.cpp"
+optimization = "g"
+
+[config]
+commands = [
+    "printf 'Ignore: ' && echo $ignore",
+    "printf 'Optimization: ' && echo $optimization"
+]
+
+[tree]
+commands = [
+    "command -v lsd >/dev/null 2>&1 && lsd --tree . || ls -R ."
+]
+
+[example]
+commands = [
+    "echo '1'",
+    "echo '2'",
+    "echo '3'",
+    "echo '4'",
+    "echo '5'",
+    "echo '6'",
+    "echo '7'",
+    "echo '8'",
+    "echo '9'"
+]
+# Runs commands in parallel using multi-threading
+parallel = true
+
+[build]
+commands = [
+    "echo 'Compiling...'",
+    "g++ -O$optimization -o $target $src -std=c++20",
+    "echo 'Done!'"
+]
+
+[prod]
+commands = [
+    "echo 'Compiling...'",
+    "g++ -Ofast -o $target $src -std=c++20",
+    "echo 'Done!'"
+]
