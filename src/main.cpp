@@ -1,26 +1,35 @@
+#include <stdarg.h>
+#include <stdlib.h>
+#include <time.h>
+
+#include <future>
+#include <iostream>
 #include <string>
 #include <vector>
-#include <future>
-#include <time.h>
-#include <stdlib.h>
-#include <iostream>
 
 #include "libs/toml.hpp"
 
+typedef std::vector<std::future<void>> Futures;
 
-inline bool environmentVariableExists(const char* var) {
-    return std::getenv(var) != nullptr;
+inline void err(const char* __format, ...) {
+    va_list args;
+    va_start(args, __format);
+
+    printf("\x1b[30mBuilder: ");
+    vprintf(__format, args);
+    printf("\x1b[0m\n");
+
+    va_end(args);
 }
 
-
-inline void processFutures(std::vector<std::future<void>>& futures) {
-    auto it = futures.begin();
+inline void process_futures(Futures& futures) {
+    Futures::iterator it = futures.begin();
     while (it != futures.end()) {
         if (it->wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
             try {
                 it->get();
             } catch (const std::exception& e) {
-                std::cerr << "Error in async task: " << e.what() << std::endl;
+                err("Error in async task: %s", e.what());
             }
 
             it = futures.erase(it);
@@ -30,8 +39,7 @@ inline void processFutures(std::vector<std::future<void>>& futures) {
     }
 }
 
-
-inline std::string toString(const toml::node& value) {
+inline std::string to_string(const toml::node& value) {
     if (value.is_string()) {
         return value.as_string()->get();
     }
@@ -50,117 +58,106 @@ inline std::string toString(const toml::node& value) {
 
     else if (value.is_array()) {
         std::ostringstream oss;
-        auto values = value.as_array();
+        const toml::v3::array* values = value.as_array();
         int len = values->size();
         for (int i = 0; i < len; i++) {
-            oss << toString(values->at(i));
+            oss << to_string(values->at(i));
             if (i != len - 1)
                 oss << ",";
         }
         oss << '\0';
         std::string result = oss.str();
         if (!result.empty()) {
-            result.pop_back(); // Remove the trailing comma
+            result.pop_back();  // Remove the trailing comma
         }
         return result;
     }
 
     else {
-        std::cerr << "Unknow type" << std::endl;
+        err("Unknow type");
         return "";
     }
 }
 
+void handle_table(toml::v3::node& node, toml::v3::ex::parse_result& config, int argc, char* argv[]) {
+    toml::v3::table& table = *node.as_table();
 
-inline std::string loadFile(const char* path) {
-    std::ifstream file(path);
-    if (!file.is_open()) {
-        std::cerr << "Failed to open the file." << std::endl;
-        return "";
+    toml::v3::node_view<toml::v3::node> commands = table["commands"];
+    if (commands.is_array()) {
+        // Set environment variables
+        for (const auto& [key, value] : config) {
+            if (!value.is_table()) {
+                const char* key_data = key.data();
+
+                if (std::getenv(key_data) != nullptr) {
+                    err("Variable already exits");
+                }
+
+                int result = setenv(key_data, to_string(value).c_str(), false);
+                if (result != 0) {
+                    err("Cant't set variable");
+                }
+            }
+        }
+        for (int i = 0; i < argc; i++) {
+            int result = setenv(("arg" + std::to_string(i)).c_str(), argv[i], false);
+            if (result != 0) {
+                err("Cant't set variable");
+            }
+        }
+
+        // Run commands
+        bool parallel = table["parallel"].value_or(false);
+        if (parallel) {
+            Futures futures;
+
+            for (const auto& cmd : *commands.as_array()) {
+                futures.push_back(std::async(std::launch::async, [&cmd]() {
+                    int result = std::system(cmd.value_or(""));
+                    if (result != 0) {
+                        err("Command failed with exit code: %d", result);
+                    }
+                }));
+            }
+
+            while (!futures.empty()) {
+                process_futures(futures);
+            }
+        }
+
+        else {
+            for (const auto& cmd : *commands.as_array()) {
+                int result = std::system(cmd.value_or(""));
+                if (result != 0) {
+                    err("Command failed with exit code: %d", result);
+                }
+            }
+        }
     }
-
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    return buffer.str();
 }
 
-
-void runTask(const std::string& name, const std::string& path) {
-    // auto content = loadFile(path.c_str());
-    // auto config = toml::parse(content);
-    auto config = toml::parse_file(path);
+void run_task(const std::string_view& name, int argc, char* argv[], const std::string& path) {
+    toml::v3::ex::parse_result config = toml::parse_file(path);
 
     // Verify is the command exists
     if (config.contains(name)) {
         toml::v3::node& node = config.at(name);
 
         if (node.is_table()) {
-            auto& table = *node.as_table();
-
-            auto commands = table["commands"];
-            if (commands.is_array()) {
-                // Set environment variables
-                for (const auto& [key, value] : config) {
-                    if (!value.is_table()) {
-                        const char* ckey = key.data();
-
-                        if (environmentVariableExists(ckey)) {
-                                std::cerr << "Variable already exits" << std::endl;
-                        }
-
-                        int result = setenv(ckey, toString(value).c_str(), false);
-                        if (result != 0) {
-                            std::cerr << "Cant't set variable" << std::endl;
-                        }
-                    }
-                }
-
-                // Run commands
-                bool parallel = table["parallel"].value_or(false);
-                if (parallel) {
-                    std::vector<std::future<void>> futures;
-
-                    for (const auto& cmd : *commands.as_array()) {
-                        futures.push_back(std::async(std::launch::async, [&cmd](){
-                            int result = std::system(cmd.value_or(""));
-                            if (result != 0) {
-                                std::cerr << "Command failed with exit code: " << result << std::endl;
-                            }
-                        }));
-                    }
-
-                    while (!futures.empty()) {
-                        processFutures(futures);
-                    }
-                }
-
-                else {
-                    for (const auto& cmd : *commands.as_array()) {
-                        int result = std::system(cmd.value_or(""));
-                        if (result != 0) {
-                            std::cerr << "Command failed with exit code: " << result << std::endl;
-                        }
-                    }
-                }
-            }
+            handle_table(node, config, argc, argv);
         }
     }
 
     else {
-        std::cout << "Invalid command\n";
+        err("Unknow command");
     }
 }
 
-
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        std::cerr << "Usage: " << argv[0] << " <task name>" << std::endl;
+        err("Usage: %s [task] [args]", argv[0]);
         return 1;
     }
 
-    std::string name = argv[1];
-    if (name == "init")
-        ;
-    else
-        runTask(name, "project.toml");
+    run_task(argv[1], argc, argv, "project.toml");
 }

@@ -46,3 +46,12 @@ commands = [
     "g++ -Ofast -o $target $src -std=c++20",
     "echo 'Done!'"
 ]
+
+[args]
+commands = [
+    "echo $arg0",
+    "echo $arg1",
+    "echo $arg2",
+    "echo $arg3",
+    "echo $arg4",
+]
